@@ -162,6 +162,98 @@ static std::vector<Move> ordered_actions(State *state){
     return actions;
 }
 
+static constexpr int MAX_KILLER_PLY = 128;
+static constexpr int HISTORY_BONUS_LIMIT = 800000;
+static Move killer_moves[MAX_KILLER_PLY][2];
+static int history_score[2][BOARD_H][BOARD_W][BOARD_H][BOARD_W];
+
+static bool same_move(const Move& a, const Move& b){
+    return a.first.first == b.first.first
+        && a.first.second == b.first.second
+        && a.second.first == b.second.first
+        && a.second.second == b.second.second;
+}
+
+static bool is_capture_move(State *state, const Move& action){
+    Point to = action.second;
+    int captured = state->board.board[1 - state->player][to.first][to.second];
+    return captured != 0;
+}
+
+static bool is_killer_move(const Move& action, int ply){
+    if(ply < 0 || ply >= MAX_KILLER_PLY){
+        return false;
+    }
+    return same_move(action, killer_moves[ply][0])
+        || same_move(action, killer_moves[ply][1]);
+}
+
+static void record_killer_move(const Move& action, int ply){
+    if(ply < 0 || ply >= MAX_KILLER_PLY){
+        return;
+    }
+    if(same_move(action, killer_moves[ply][0])){
+        return;
+    }
+
+    // quiet move 造成 cutoff 時才記 killer；吃子本來就會被 MVV-LVA 排前面。
+    killer_moves[ply][1] = killer_moves[ply][0];
+    killer_moves[ply][0] = action;
+}
+
+static void record_history_move(State *state, const Move& action, int depth){
+    Point from = action.first;
+    Point to = action.second;
+    int& score = history_score[state->player][from.first][from.second][to.first][to.second];
+    score += depth * depth;
+    if(score > HISTORY_BONUS_LIMIT){
+        score = HISTORY_BONUS_LIMIT;
+    }
+}
+
+static int move_order_score_with_history(State *state, const Move& action, int ply){
+    int score = move_order_score(state, action);
+
+    if(!is_capture_move(state, action) && is_killer_move(action, ply)){
+        // killer 只幫 quiet move 插隊，分數刻意低於吃子和吃王。
+        score += 900000;
+    }
+
+    Point from = action.first;
+    Point to = action.second;
+    int hist = history_score[state->player][from.first][from.second][to.first][to.second];
+    if(hist > HISTORY_BONUS_LIMIT){
+        hist = HISTORY_BONUS_LIMIT;
+    }
+    score += hist;
+
+    return score;
+}
+
+static std::vector<Move> ordered_actions_with_history(State *state, int ply){
+    std::vector<std::pair<int, Move>> scored;
+    scored.reserve(state->legal_actions.size());
+
+    for(auto& action : state->legal_actions){
+        scored.push_back({move_order_score_with_history(state, action, ply), action});
+    }
+
+    std::stable_sort(
+        scored.begin(),
+        scored.end(),
+        [](const auto& a, const auto& b){
+            return a.first > b.first;
+        }
+    );
+
+    std::vector<Move> actions;
+    actions.reserve(scored.size());
+    for(auto& item : scored){
+        actions.push_back(item.second);
+    }
+    return actions;
+}
+
 static bool side_to_move_can_capture_king(State *state){
     if(state->legal_actions.empty() && state->game_state == UNKNOWN){
         state->get_legal_actions();
@@ -384,7 +476,7 @@ static int alphabeta_ctx(
 
     int best_score = M_MAX;
 
-    std::vector<Move> actions = ordered_actions(state);
+    std::vector<Move> actions = ordered_actions_with_history(state, ply);
     for(auto& action : actions){
         if(ctx.stop){
             break;
@@ -415,6 +507,11 @@ static int alphabeta_ctx(
             alpha = score;
         }
         if(alpha >= beta){
+            if(!is_capture_move(state, action)){
+                // 這手 quiet move 讓對手分支被剪掉，下次同 ply 先試它。
+                record_killer_move(action, ply);
+                record_history_move(state, action, depth);
+            }
             break;
         }
     }
