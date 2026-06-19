@@ -119,8 +119,18 @@ SearchResult MiniMax::search(
         return result;
     }
 
+    // 先放一個保底走法，避免後面沒有更新到最佳步時回傳空 move。
+    result.best_move = state->legal_actions.front();
+
     if(state->game_state == WIN){
-        result.best_move = state->legal_actions[0];
+        // WIN 代表其中一步可以吃王，不能假設它一定排在 legal_actions 的第一個。
+        for(auto& action : state->legal_actions){
+            Point to = action.second;
+            if(state->board.board[1 - state->player][to.first][to.second] == 6){
+                result.best_move = action;
+                break;
+            }
+        }
         result.score = P_MAX;
         result.nodes = ctx.nodes;
         result.seldepth = ctx.seldepth;
@@ -128,11 +138,15 @@ SearchResult MiniMax::search(
         return result;
     }
 
-    int best_score = M_MAX - 10;
+    int best_score = M_MAX;
     int move_index = 0;
     int total_moves = (int)state->legal_actions.size();
 
     for(auto& action : state->legal_actions){
+        if(ctx.stop){
+            break;
+        }
+
         /* [ Hackathon TODO 4-1 ]
          * search this move like TODO 3, but starting from the root */
         State* next = state->next_state(action);
@@ -141,16 +155,16 @@ SearchResult MiniMax::search(
         int score = same ? raw : -raw;
         delete next;
 
-            if(score > best_score){
-                // [ Hackathon TODO 4-2 ]
-                // keep this move if it is the best so far
-                best_score = score;
-                result.best_move = action;
+        if(score > best_score){
+            // [ Hackathon TODO 4-2 ]
+            // keep this move if it is the best so far
+            best_score = score;
+            result.best_move = action;
 
-                if(p.report_partial && ctx.on_root_update){
-                   ctx.on_root_update({result.best_move, best_score, depth, move_index + 1, total_moves});
-                }
-            }  
+            if(p.report_partial && ctx.on_root_update){
+                ctx.on_root_update({result.best_move, best_score, depth, move_index + 1, total_moves});
+            }
+        }
         move_index++;
     }
 
@@ -161,7 +175,7 @@ SearchResult MiniMax::search(
     result.seldepth = ctx.seldepth;
     result.pv = {result.best_move};
 
-        return result;
+    return result;
 } 
 
 
