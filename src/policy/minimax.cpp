@@ -190,17 +190,80 @@ static bool gives_opponent_immediate_king_capture(State *state, const Move& acti
     return losing;
 }
 
-static std::vector<Move> ordered_root_actions(State *state){
-    std::vector<Move> actions = ordered_actions(state);
+static int opponent_best_capture_value_after(State *state, const Move& action){
+    State* next = state->next_state(action);
+    bool opponent_turn = !next->same_player_as_parent();
 
-    std::stable_partition(
-        actions.begin(),
-        actions.end(),
-        [state](const Move& action){
-            return !gives_opponent_immediate_king_capture(state, action);
+    if(!opponent_turn){
+        delete next;
+        return 0;
+    }
+
+    if(next->legal_actions.empty() && next->game_state == UNKNOWN){
+        next->get_legal_actions();
+    }
+
+    if(next->game_state == WIN){
+        delete next;
+        return 10000000;
+    }
+
+    int worst = 0;
+    for(auto& opp_action : next->legal_actions){
+        Point to = opp_action.second;
+        int captured = next->board.board[1 - next->player][to.first][to.second];
+
+        if(captured == 6){
+            delete next;
+            return 10000000;
+        }
+
+        int value = piece_value(captured);
+        if(value > worst){
+            worst = value;
+        }
+    }
+
+    delete next;
+    return worst;
+}
+
+static std::vector<Move> ordered_root_actions(State *state){
+    std::vector<std::pair<int, Move>> scored;
+    scored.reserve(state->legal_actions.size());
+
+    for(auto& action : state->legal_actions){
+        int score = move_order_score(state, action);
+
+        if(gives_opponent_immediate_king_capture(state, action)){
+            score -= 50000000;
+        }
+
+        int danger = opponent_best_capture_value_after(state, action);
+        if(danger >= 10000000){
+            // root fallback 不能一開始就挑送王棋，但仍只降排序，不硬性禁止。
+            score -= 50000000;
+        }else{
+            // 對方下一手能白吃大子時先排後面，讓 root 優先搜尋比較安全的候選。
+            score -= 8 * danger;
+        }
+
+        scored.push_back({score, action});
+    }
+
+    std::stable_sort(
+        scored.begin(),
+        scored.end(),
+        [](const auto& a, const auto& b){
+            return a.first > b.first;
         }
     );
 
+    std::vector<Move> actions;
+    actions.reserve(scored.size());
+    for(auto& item : scored){
+        actions.push_back(item.second);
+    }
     return actions;
 }
 
