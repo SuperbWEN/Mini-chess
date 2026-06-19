@@ -352,17 +352,38 @@ static bool gives_opponent_immediate_king_capture(State *state, const Move& acti
     return losing;
 }
 
-static std::vector<Move> ordered_root_actions(State *state){
-    std::vector<Move> actions = ordered_actions(state);
+static std::vector<Move> ordered_root_actions(State *state, int depth){
+    Move hash_move;
+    bool has_hash_move = get_hash_best_move(state, hash_move, depth);
+    std::vector<std::pair<int, Move>> scored;
+    scored.reserve(state->legal_actions.size());
 
-    std::stable_partition(
-        actions.begin(),
-        actions.end(),
-        [state](const Move& action){
-            return !gives_opponent_immediate_king_capture(state, action);
+    for(auto& action : state->legal_actions){
+        int score = move_order_score(state, action);
+        if(has_hash_move && same_move(action, hash_move)){
+            // root 也沿用上一輪完整搜到的 best move，只拿來排序，不直接相信分數。
+            score += 2000000;
+        }
+        if(gives_opponent_immediate_king_capture(state, action)){
+            // 會立刻送王的棋還是往後排，避免 fallback 一開始就挑到危險手。
+            score -= 50000000;
+        }
+        scored.push_back({score, action});
+    }
+
+    std::stable_sort(
+        scored.begin(),
+        scored.end(),
+        [](const auto& a, const auto& b){
+            return a.first > b.first;
         }
     );
 
+    std::vector<Move> actions;
+    actions.reserve(scored.size());
+    for(auto& item : scored){
+        actions.push_back(item.second);
+    }
     return actions;
 }
 
@@ -629,7 +650,7 @@ SearchResult MiniMax::search(
     }
 
     int total_moves = (int)state->legal_actions.size();
-    std::vector<Move> root_actions = ordered_root_actions(state);
+    std::vector<Move> root_actions = ordered_root_actions(state, depth);
 
     // 先回報一手保底合法棋，避免搜尋還沒結束就被外部 runner 中斷。
     result.best_move = root_actions.front();
@@ -717,6 +738,10 @@ SearchResult MiniMax::search(
     // update result and return
     if(searched_any){
         result.score = best_score;
+    }
+    if(searched_any && !ctx.stop){
+        // root 完整搜完後也記 best move，下一次同局面 fallback/root search 可以先看它。
+        record_hash_best_move(state, result.best_move, depth);
     }
     result.nodes = ctx.nodes;
     result.seldepth = ctx.seldepth;
