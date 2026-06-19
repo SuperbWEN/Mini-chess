@@ -119,11 +119,18 @@ SearchResult MiniMax::search(
         return result;
     }
 
-    // 先放一個保底走法，避免後面沒有更新到最佳步時回傳空 move。
+    int total_moves = (int)state->legal_actions.size();
+
+    // 先回報一手保底合法棋，避免搜尋還沒結束就被外部 runner 中斷。
     result.best_move = state->legal_actions.front();
+    result.score = 0;
+    result.pv = {result.best_move};
+    if(p.report_partial && ctx.on_root_update){
+        ctx.on_root_update({result.best_move, result.score, depth, 0, total_moves});
+    }
 
     if(state->game_state == WIN){
-        // WIN 代表其中一步可以吃王，不能假設它一定排在 legal_actions 的第一個。
+        // WIN 代表目前有棋可以吃王，但不保證吃王棋在第一個，所以這裡要明確找出來。
         for(auto& action : state->legal_actions){
             Point to = action.second;
             if(state->board.board[1 - state->player][to.first][to.second] == 6){
@@ -135,12 +142,15 @@ SearchResult MiniMax::search(
         result.nodes = ctx.nodes;
         result.seldepth = ctx.seldepth;
         result.pv = {result.best_move};
+        if(p.report_partial && ctx.on_root_update){
+            ctx.on_root_update({result.best_move, result.score, depth, 1, total_moves});
+        }
         return result;
     }
 
-    int best_score = M_MAX;
+    // fallback 已經先給 0 分，這樣就算搜尋提早停止也不會留下負無限分數。
+    int best_score = result.score;
     int move_index = 0;
-    int total_moves = (int)state->legal_actions.size();
 
     for(auto& action : state->legal_actions){
         if(ctx.stop){
@@ -161,6 +171,7 @@ SearchResult MiniMax::search(
             best_score = score;
             result.best_move = action;
 
+            // 找到更好的 root move 就立刻回報，讓 2 秒制下也能拿到目前最佳解。
             if(p.report_partial && ctx.on_root_update){
                 ctx.on_root_update({result.best_move, best_score, depth, move_index + 1, total_moves});
             }

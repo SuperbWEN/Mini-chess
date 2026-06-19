@@ -314,7 +314,8 @@ void State::get_legal_actions_naive(){
                                 all_actions.push_back(Move(Point(i, j), Point(i+1, j+1)));
                                 if(oppn_piece==6){
                                     this->game_state = WIN;
-                                    this->legal_actions = all_actions;
+                                    // 吃王會立刻獲勝，所以 naive 版也只留下這一步，和 bitboard 行為一致。
+                                    this->legal_actions = {all_actions.back()};
                                     return;
                                 }
                             }
@@ -322,7 +323,7 @@ void State::get_legal_actions_naive(){
                                 all_actions.push_back(Move(Point(i, j), Point(i+1, j-1)));
                                 if(oppn_piece==6){
                                     this->game_state = WIN;
-                                    this->legal_actions = all_actions;
+                                    this->legal_actions = {all_actions.back()};
                                     return;
                                 }
                             }
@@ -335,7 +336,7 @@ void State::get_legal_actions_naive(){
                                 all_actions.push_back(Move(Point(i, j), Point(i-1, j+1)));
                                 if(oppn_piece==6){
                                     this->game_state = WIN;
-                                    this->legal_actions = all_actions;
+                                    this->legal_actions = {all_actions.back()};
                                     return;
                                 }
                             }
@@ -343,7 +344,7 @@ void State::get_legal_actions_naive(){
                                 all_actions.push_back(Move(Point(i, j), Point(i-1, j-1)));
                                 if(oppn_piece==6){
                                     this->game_state = WIN;
-                                    this->legal_actions = all_actions;
+                                    this->legal_actions = {all_actions.back()};
                                     return;
                                 }
                             }
@@ -379,7 +380,7 @@ void State::get_legal_actions_naive(){
                                 if(oppn_piece){
                                     if(oppn_piece==6){
                                         this->game_state = WIN;
-                                        this->legal_actions = all_actions;
+                                        this->legal_actions = {all_actions.back()};
                                         return;
                                     }else{
                                         break;
@@ -409,7 +410,7 @@ void State::get_legal_actions_naive(){
                             oppn_piece = oppn_board[p[0]][p[1]];
                             if(oppn_piece==6){
                                 this->game_state = WIN;
-                                this->legal_actions = all_actions;
+                                this->legal_actions = {all_actions.back()};
                                 return;
                             }
                         }
@@ -432,7 +433,7 @@ void State::get_legal_actions_naive(){
                             oppn_piece = oppn_board[p[0]][p[1]];
                             if(oppn_piece==6){
                                 this->game_state = WIN;
-                                this->legal_actions = all_actions;
+                                this->legal_actions = {all_actions.back()};
                                 return;
                             }
                         }
