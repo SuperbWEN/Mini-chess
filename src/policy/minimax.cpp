@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <cstdint>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include "state.hpp"
@@ -167,6 +169,14 @@ static constexpr int HISTORY_BONUS_LIMIT = 800000;
 static Move killer_moves[MAX_KILLER_PLY][2];
 static int history_score[2][BOARD_H][BOARD_W][BOARD_H][BOARD_W];
 
+struct HashMoveEntry {
+    int depth;
+    Move best_move;
+};
+
+static std::unordered_map<unsigned long long, HashMoveEntry> hash_best_moves;
+static constexpr size_t HASH_MOVE_MAX_SIZE = 1000000;
+
 static bool same_move(const Move& a, const Move& b){
     return a.first.first == b.first.first
         && a.first.second == b.first.second
@@ -230,12 +240,72 @@ static int move_order_score_with_history(State *state, const Move& action, int p
     return score;
 }
 
-static std::vector<Move> ordered_actions_with_history(State *state, int ply){
+static bool get_hash_best_move(State *state, Move& best_move, int depth){
+    unsigned long long key = (unsigned long long)state->hash();
+    auto it = hash_best_moves.find(key);
+    if(it == hash_best_moves.end()){
+        return false;
+    }
+
+    // 這裡只拿來排序，不做分數 cutoff；淺一點的舊資料也比完全沒有線索好。
+    if(it->second.depth >= depth - 1 || it->second.depth >= 0){
+        best_move = it->second.best_move;
+        return true;
+    }
+    return false;
+}
+
+static void record_hash_best_move(State *state, const Move& best_move, int depth){
+    if(hash_best_moves.size() > HASH_MOVE_MAX_SIZE){
+        hash_best_moves.clear();
+    }
+
+    unsigned long long key = (unsigned long long)state->hash();
+    auto it = hash_best_moves.find(key);
+    if(it != hash_best_moves.end() && it->second.depth >= depth){
+        return;
+    }
+
+    hash_best_moves[key] = {depth, best_move};
+}
+
+[[maybe_unused]] static std::vector<Move> ordered_actions_with_history(State *state, int ply){
     std::vector<std::pair<int, Move>> scored;
     scored.reserve(state->legal_actions.size());
 
     for(auto& action : state->legal_actions){
         scored.push_back({move_order_score_with_history(state, action, ply), action});
+    }
+
+    std::stable_sort(
+        scored.begin(),
+        scored.end(),
+        [](const auto& a, const auto& b){
+            return a.first > b.first;
+        }
+    );
+
+    std::vector<Move> actions;
+    actions.reserve(scored.size());
+    for(auto& item : scored){
+        actions.push_back(item.second);
+    }
+    return actions;
+}
+
+static std::vector<Move> ordered_actions_with_hash_history(State *state, int ply, int depth){
+    Move hash_move;
+    bool has_hash_move = get_hash_best_move(state, hash_move, depth);
+    std::vector<std::pair<int, Move>> scored;
+    scored.reserve(state->legal_actions.size());
+
+    for(auto& action : state->legal_actions){
+        int score = move_order_score_with_history(state, action, ply);
+        if(has_hash_move && same_move(action, hash_move)){
+            // hash best move 只負責排前面，吃王本身還是靠更高的分數保最高優先。
+            score += 2000000;
+        }
+        scored.push_back({score, action});
     }
 
     std::stable_sort(
@@ -475,8 +545,10 @@ static int alphabeta_ctx(
     }
 
     int best_score = M_MAX;
+    Move best_move;
+    bool has_best_move = false;
 
-    std::vector<Move> actions = ordered_actions_with_history(state, ply);
+    std::vector<Move> actions = ordered_actions_with_hash_history(state, ply, depth);
     for(auto& action : actions){
         if(ctx.stop){
             break;
@@ -502,6 +574,8 @@ static int alphabeta_ctx(
 
         if(score > best_score){
             best_score = score;
+            best_move = action;
+            has_best_move = true;
         }
         if(score > alpha){
             alpha = score;
@@ -514,6 +588,11 @@ static int alphabeta_ctx(
             }
             break;
         }
+    }
+
+    if(!ctx.stop && has_best_move){
+        // 只記完整搜完的 best move，下一次遇到同局面時用來排序，不直接相信它的分數。
+        record_hash_best_move(state, best_move, depth);
     }
 
     history.pop(state->hash());
