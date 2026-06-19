@@ -204,6 +204,132 @@ static std::vector<Move> ordered_root_actions(State *state){
     return actions;
 }
 
+static constexpr int QSEARCH_DEPTH = 2; // 2就好
+
+static bool is_tactical_move(State *state, const Move& action){
+    Point to = action.second;
+    int captured = state->board.board[1 - state->player][to.first][to.second];
+
+    if(captured == 6){
+        return true;
+    }
+    if(captured != 0){
+        return true;
+    }
+    return false;
+}
+
+static std::vector<Move> ordered_tactical_actions(State *state){
+    std::vector<Move> ordered = ordered_actions(state);
+    std::vector<Move> tactical;
+    tactical.reserve(ordered.size());
+
+    for(auto& action : ordered){
+        if(is_tactical_move(state, action)){
+            tactical.push_back(action);
+        }
+    }
+
+    return tactical;
+}
+
+static int quiescence_ctx(
+    State *state,
+    int alpha,
+    int beta,
+    GameHistory& history,
+    int ply,
+    int qdepth,
+    SearchContext& ctx,
+    const MMParams& p
+){
+    ctx.nodes++;
+    if(ply > ctx.seldepth){
+        ctx.seldepth = ply;
+    }
+    if(ctx.stop){
+        return 0;
+    }
+
+    if(state->legal_actions.empty() && state->game_state == UNKNOWN){
+        state->get_legal_actions();
+    }
+
+    if(state->game_state == WIN){
+        return P_MAX - ply;
+    }
+
+    if(state->game_state == DRAW){
+        return 0;
+    }
+
+    int rep_score;
+    if(state->check_repetition(history, rep_score)){
+        return rep_score;
+    }
+    history.push(state->hash());
+
+    // 先用目前局面當 stand-pat，只有吃子或吃王這種戰術步才繼續延伸。
+    int stand_pat = state->evaluate(
+        p.use_kp_eval, p.use_eval_mobility, &history
+    );
+
+    if(stand_pat >= beta){
+        history.pop(state->hash());
+        return stand_pat;
+    }
+
+    if(stand_pat > alpha){
+        alpha = stand_pat;
+    }
+
+    int best_score = stand_pat;
+
+    if(qdepth <= 0){
+        history.pop(state->hash());
+        return best_score;
+    }
+
+    std::vector<Move> actions = ordered_tactical_actions(state);
+    for(auto& action : actions){
+        if(ctx.stop){
+            break;
+        }
+
+        State* next = state->next_state(action);
+        bool same = next->same_player_as_parent();
+        int raw;
+
+        // 同一方續走就維持 window；換手才把 alpha/beta 反向給 child。
+        if(same){
+            raw = quiescence_ctx(next, alpha, beta, history, ply + 1, qdepth - 1, ctx, p);
+        }else{
+            raw = quiescence_ctx(next, -beta, -alpha, history, ply + 1, qdepth - 1, ctx, p);
+        }
+
+        delete next;
+
+        if(ctx.stop){
+            break;
+        }
+
+        int score = same ? raw : -raw;
+
+        if(score > best_score){
+            best_score = score;
+        }
+        if(score > alpha){
+            alpha = score;
+        }
+        if(alpha >= beta){
+            break;
+        }
+    }
+
+    history.pop(state->hash());
+    return best_score;
+}
+
 static int alphabeta_ctx(
     State *state,
     int depth,
@@ -242,11 +368,18 @@ static int alphabeta_ctx(
     history.push(state->hash());
 
     if(depth <= 0){
-        int score = state->evaluate(
-            p.use_kp_eval, p.use_eval_mobility, &history
-        );
+        // alphabeta 已經 push 過這個局面；先 pop 再進 qsearch，避免 repetition history 重複記同一手。
         history.pop(state->hash());
-        return score;
+        return quiescence_ctx(
+            state,
+            alpha,
+            beta,
+            history,
+            ply,
+            QSEARCH_DEPTH,
+            ctx,
+            p
+        );
     }
 
     int best_score = M_MAX;
