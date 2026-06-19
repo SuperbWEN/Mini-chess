@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <utility>
+#include <vector>
 #include "state.hpp"
 #include "minimax.hpp"
 
@@ -90,6 +92,118 @@ int MiniMax::eval_ctx(
     return best_score;
 }
 
+static int piece_value(int piece){
+    switch(piece){
+        case 1: return 100;     // pawn
+        case 2: return 500;     // rook
+        case 3: return 320;     // knight
+        case 4: return 330;     // bishop
+        case 5: return 900;     // queen
+        case 6: return 100000;  // king
+        default: return 0;
+    }
+}
+
+static int move_order_score(State *state, const Move& action){
+    Point from = action.first;
+    Point to = action.second;
+    int attacker = state->board.board[state->player][from.first][from.second];
+    int captured = state->board.board[1 - state->player][to.first][to.second];
+    int score = 0;
+
+    if(captured == 6){
+        // 吃王永遠排最前面，這種局面不用讓普通吃子或中心分干擾。
+        score += 10000000;
+    }else if(captured){
+        // MVV-LVA：先吃價值高的棋，若目標相同，低價攻擊子優先。
+        score += 1000000 + 100 * piece_value(captured) - piece_value(attacker);
+    }
+
+    if(attacker == 1){
+        // 兵越靠近升變列越值得先看，但這只是小加分，不能蓋過吃子。
+        int promotion_row = (state->player == 0) ? 0 : BOARD_H - 1;
+        int dist = std::abs((int)to.first - promotion_row);
+        score += 200 - 20 * dist;
+        if(dist == 0){
+            score += 3000;
+        }
+    }
+
+    int row = (int)to.first;
+    int col = (int)to.second;
+    int row_dist = std::min(std::abs(row - 2), std::abs(row - 3));
+    int col_dist = std::abs(col - 2);
+    score += 30 - 5 * (row_dist + col_dist);
+
+    return score;
+}
+
+static std::vector<Move> ordered_actions(State *state){
+    std::vector<std::pair<int, Move>> scored;
+    scored.reserve(state->legal_actions.size());
+
+    for(auto& action : state->legal_actions){
+        scored.push_back({move_order_score(state, action), action});
+    }
+
+    std::stable_sort(
+        scored.begin(),
+        scored.end(),
+        [](const auto& a, const auto& b){
+            return a.first > b.first;
+        }
+    );
+
+    std::vector<Move> actions;
+    actions.reserve(scored.size());
+    for(auto& item : scored){
+        actions.push_back(item.second);
+    }
+    return actions;
+}
+
+static bool side_to_move_can_capture_king(State *state){
+    if(state->legal_actions.empty() && state->game_state == UNKNOWN){
+        state->get_legal_actions();
+    }
+
+    for(auto& action : state->legal_actions){
+        Point to = action.second;
+        if(state->board.board[1 - state->player][to.first][to.second] == 6){
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool gives_opponent_immediate_king_capture(State *state, const Move& action){
+    State* next = state->next_state(action);
+    bool opponent_turn = !next->same_player_as_parent();
+    bool losing = false;
+
+    if(opponent_turn){
+        // 這個檢查只放在 root，先把會立刻送王的棋往後排。
+        losing = side_to_move_can_capture_king(next);
+    }
+
+    delete next;
+    return losing;
+}
+
+static std::vector<Move> ordered_root_actions(State *state){
+    std::vector<Move> actions = ordered_actions(state);
+
+    std::stable_partition(
+        actions.begin(),
+        actions.end(),
+        [state](const Move& action){
+            return !gives_opponent_immediate_king_capture(state, action);
+        }
+    );
+
+    return actions;
+}
+
 static int alphabeta_ctx(
     State *state,
     int depth,
@@ -137,7 +251,8 @@ static int alphabeta_ctx(
 
     int best_score = M_MAX;
 
-    for(auto& action : state->legal_actions){
+    std::vector<Move> actions = ordered_actions(state);
+    for(auto& action : actions){
         if(ctx.stop){
             break;
         }
@@ -205,9 +320,10 @@ SearchResult MiniMax::search(
     }
 
     int total_moves = (int)state->legal_actions.size();
+    std::vector<Move> root_actions = ordered_root_actions(state);
 
     // 先回報一手保底合法棋，避免搜尋還沒結束就被外部 runner 中斷。
-    result.best_move = state->legal_actions.front();
+    result.best_move = root_actions.front();
     result.score = 0;
     result.pv = {result.best_move};
     if(p.report_partial && ctx.on_root_update){
@@ -239,7 +355,7 @@ SearchResult MiniMax::search(
     bool searched_any = false;
     int move_index = 0;
 
-    for(auto& action : state->legal_actions){
+    for(auto& action : root_actions){
         if(ctx.stop){
             break;
         }
