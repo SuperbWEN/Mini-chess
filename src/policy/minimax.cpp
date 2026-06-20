@@ -387,7 +387,7 @@ static std::vector<Move> ordered_root_actions(State *state, int depth){
     return actions;
 }
 
-static constexpr int QSEARCH_DEPTH = 2; // 3剛剛好，有時候是2
+static constexpr int QSEARCH_DEPTH = 3; // 3剛剛好，有時候是2
 
 static bool is_promotion_move(State *state, const Move& action){
     Point from = action.first;
