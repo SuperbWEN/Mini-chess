@@ -387,7 +387,14 @@ static std::vector<Move> ordered_root_actions(State *state, int depth){
     return actions;
 }
 
-static constexpr int QSEARCH_DEPTH = 2; // 2就好
+static constexpr int QSEARCH_DEPTH = 3; // 3剛剛好
+
+static bool is_promotion_move(State *state, const Move& action){
+    Point from = action.first;
+    Point to = action.second;
+    int piece = state->board.board[state->player][from.first][from.second];
+    return piece == 1 && (to.first == 0 || to.first == BOARD_H - 1);
+}
 
 static bool is_tactical_move(State *state, const Move& action){
     Point to = action.second;
@@ -397,6 +404,9 @@ static bool is_tactical_move(State *state, const Move& action){
         return true;
     }
     if(captured != 0){
+        return true;
+    }
+    if(is_promotion_move(state, action)){
         return true;
     }
     return false;

@@ -260,6 +260,7 @@ State* State::next_state(const Move& move){
     next.board[p][to.first][to.second] = moved;
 
     State* ns = new State(next, opp);
+    ns->step = this->step + 1;
     ns->zobrist_hash = h;
     ns->zobrist_valid = true;
     return ns;
