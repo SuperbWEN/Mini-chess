@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <unordered_map>
 #include <utility>
@@ -6,6 +7,7 @@
 #include "state.hpp"
 #include "minimax.hpp"
 
+static bool time_up(SearchContext& ctx);
 
 /*============================================================
  * MiniMax — eval_ctx
@@ -24,7 +26,7 @@ int MiniMax::eval_ctx(
     if(ply > ctx.seldepth){
         ctx.seldepth = ply;
     }
-    if(ctx.stop){
+    if(time_up(ctx)){
         return 0;
     }
 
@@ -389,6 +391,31 @@ static std::vector<Move> ordered_root_actions(State *state, int depth){
 
 static constexpr int QSEARCH_DEPTH = 3; // 3剛剛好，有時候是2
 
+static std::chrono::steady_clock::time_point search_deadline;
+static bool use_deadline = false;
+static int time_check_counter = 0;
+
+static bool time_up(SearchContext& ctx){
+    if(ctx.stop){
+        return true;
+    }
+    if(!use_deadline){
+        return false;
+    }
+
+    // 不要每個 node 都呼叫 now()，避免太耗效能
+    if((++time_check_counter & 4095) != 0){
+        return false;
+    }
+
+    if(std::chrono::steady_clock::now() >= search_deadline){
+        ctx.stop = true;
+        return true;
+    }
+
+    return false;
+}
+
 static bool is_promotion_move(State *state, const Move& action){
     Point from = action.first;
     Point to = action.second;
@@ -440,7 +467,7 @@ static int quiescence_ctx(
     if(ply > ctx.seldepth){
         ctx.seldepth = ply;
     }
-    if(ctx.stop){
+    if(time_up(ctx)){
         return 0;
     }
 
@@ -537,7 +564,7 @@ static int alphabeta_ctx(
     if(ply > ctx.seldepth){
         ctx.seldepth = ply;
     }
-    if(ctx.stop){
+    if(time_up(ctx)){
         return 0;
     }
 
@@ -643,6 +670,10 @@ SearchResult MiniMax::search(
     SearchContext& ctx
 ){
     ctx.reset();
+    use_deadline = true;
+    time_check_counter = 0;
+    search_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1700);
+
     MMParams p = MMParams::from_map(ctx.params);
     SearchResult result;
     result.depth = depth;
@@ -696,7 +727,7 @@ SearchResult MiniMax::search(
     int move_index = 0;
 
     for(auto& action : root_actions){
-        if(ctx.stop){
+        if(time_up(ctx)){
             break;
         }
 
@@ -712,7 +743,7 @@ SearchResult MiniMax::search(
         }
         delete next;
 
-        if(ctx.stop){
+        if(time_up(ctx)){
             break;
         }
 
