@@ -453,6 +453,13 @@ static std::vector<Move> ordered_tactical_actions(State *state){
     return tactical;
 }
 
+/*============================================================
+ * Algorithm: Quiescence Search
+ *
+ * Quiescence extends leaf nodes through tactical moves only
+ * so Alpha-Beta/PVS does not stop on an unstable capture or
+ * promotion position.
+ *============================================================*/
 static int quiescence_ctx(
     State *state,
     int alpha,
@@ -550,6 +557,13 @@ static int quiescence_ctx(
     return best_score;
 }
 
+/*============================================================
+ * Algorithm: Alpha-Beta Search
+ *
+ * This is the original stable MiniMax search core with
+ * alpha-beta pruning, move ordering, killer/history moves,
+ * and quiescence search at depth <= 0.
+ *============================================================*/
 static int alphabeta_ctx(
     State *state,
     int depth,
@@ -650,6 +664,141 @@ static int alphabeta_ctx(
 
     if(!ctx.stop && has_best_move){
         // 只記完整搜完的 best move，下一次遇到同局面時用來排序，不直接相信它的分數。
+        record_hash_best_move(state, best_move, depth);
+    }
+
+    history.pop(state->hash());
+    return best_score;
+}
+
+/*============================================================
+ * Algorithm: Principal Variation Search(PVS)
+ *
+ * PVS is an optimized version of alpha-beta pruning.
+ * The first child is searched with a full window, while later
+ * children are first searched with a null window. If the result
+ * may improve alpha, a full-window re-search is performed.
+ *============================================================*/
+static int pvs_ctx(
+    State *state,
+    int depth,
+    int alpha,
+    int beta,
+    GameHistory& history,
+    int ply,
+    SearchContext& ctx,
+    const MMParams& p
+){
+    ctx.nodes++;
+    if(ply > ctx.seldepth){
+        ctx.seldepth = ply;
+    }
+    if(ctx.stop){
+        return 0;
+    }
+
+    if(state->legal_actions.empty() && state->game_state == UNKNOWN){
+        state->get_legal_actions();
+    }
+
+    if(state->game_state == WIN){
+        return P_MAX - ply;
+    }
+
+    if(state->game_state == DRAW){
+        return 0;
+    }
+
+    int rep_score;
+    if(state->check_repetition(history, rep_score)){
+        return rep_score;
+    }
+    history.push(state->hash());
+
+    if(depth <= 0){
+        history.pop(state->hash());
+        return quiescence_ctx(
+            state,
+            alpha,
+            beta,
+            history,
+            ply,
+            QSEARCH_DEPTH,
+            ctx,
+            p
+        );
+    }
+
+    int best_score = M_MAX;
+    Move best_move;
+    bool has_best_move = false;
+    bool first_child = true;
+
+    std::vector<Move> actions = ordered_actions_with_hash_history(state, ply, depth);
+    for(auto& action : actions){
+        if(ctx.stop){
+            break;
+        }
+
+        State* next = state->next_state(action);
+        bool same = next->same_player_as_parent();
+        int raw;
+        int score;
+
+        if(first_child){
+            if(same){
+                raw = pvs_ctx(next, depth - 1, alpha, beta, history, ply + 1, ctx, p);
+                score = raw;
+            }else{
+                raw = pvs_ctx(next, depth - 1, -beta, -alpha, history, ply + 1, ctx, p);
+                score = -raw;
+            }
+        }else if(same){
+            raw = pvs_ctx(next, depth - 1, alpha, alpha + 1, history, ply + 1, ctx, p);
+            score = raw;
+
+            if(score > alpha && score < beta){
+                raw = pvs_ctx(next, depth - 1, alpha, beta, history, ply + 1, ctx, p);
+                score = raw;
+            }
+        }else{
+            raw = pvs_ctx(next, depth - 1, -alpha - 1, -alpha, history, ply + 1, ctx, p);
+            score = -raw;
+
+            if(score > alpha && score < beta){
+                raw = pvs_ctx(next, depth - 1, -beta, -alpha, history, ply + 1, ctx, p);
+                score = -raw;
+            }
+        }
+
+        delete next;
+
+        if(ctx.stop){
+            break;
+        }
+
+        if(score > best_score){
+            best_score = score;
+            best_move = action;
+            has_best_move = true;
+        }
+
+        if(score > alpha){
+            alpha = score;
+        }
+
+        if(alpha >= beta){
+            if(!is_capture_move(state, action)){
+                record_killer_move(action, ply);
+                record_history_move(state, action, depth);
+            }
+            break;
+        }
+
+        first_child = false;
+    }
+
+    if(!ctx.stop && has_best_move){
         record_hash_best_move(state, best_move, depth);
     }
 
@@ -791,6 +940,128 @@ SearchResult MiniMax::search(
     return result;
 } 
 
+/*============================================================
+ * Algorithm: PVS Root Search
+ *
+ * This is the root function for the optional PVS policy.
+ * It keeps a fallback legal move and searches root moves using
+ * Principal Variation Search.
+ *============================================================*/
+SearchResult PVS::search(
+    State *state,
+    int depth,
+    GameHistory& history,
+    SearchContext& ctx
+){
+    ctx.reset();
+    use_deadline = false;
+    MMParams p = MMParams::from_map(ctx.params);
+    SearchResult result;
+    result.depth = depth;
+
+    if(!state->legal_actions.size()){
+        state->get_legal_actions();
+    }
+
+    if(state->legal_actions.empty()){
+        result.best_move = Move();
+        result.score = 0;
+        result.nodes = ctx.nodes;
+        result.seldepth = ctx.seldepth;
+        return result;
+    }
+
+    int total_moves = (int)state->legal_actions.size();
+    std::vector<Move> root_actions = ordered_root_actions(state, depth);
+
+    result.best_move = root_actions.front();
+    result.score = 0;
+    result.pv = {result.best_move};
+    if(p.report_partial && ctx.on_root_update){
+        ctx.on_root_update({result.best_move, result.score, depth, 0, total_moves});
+    }
+
+    if(state->game_state == WIN){
+        for(auto& action : state->legal_actions){
+            Point to = action.second;
+            if(state->board.board[1 - state->player][to.first][to.second] == 6){
+                result.best_move = action;
+                break;
+            }
+        }
+        result.score = P_MAX;
+        result.nodes = ctx.nodes;
+        result.seldepth = ctx.seldepth;
+        result.pv = {result.best_move};
+        if(p.report_partial && ctx.on_root_update){
+            ctx.on_root_update({result.best_move, result.score, depth, 1, total_moves});
+        }
+        return result;
+    }
+
+    int alpha = M_MAX;
+    int beta = P_MAX;
+    int best_score = M_MAX;
+    bool searched_any = false;
+    int move_index = 0;
+
+    for(auto& action : root_actions){
+        if(ctx.stop){
+            break;
+        }
+
+        State* next = state->next_state(action);
+        bool same = next->same_player_as_parent();
+        int raw;
+        if(same){
+            raw = pvs_ctx(next, depth - 1, alpha, beta, history, 1, ctx, p);
+        }else{
+            raw = pvs_ctx(next, depth - 1, -beta, -alpha, history, 1, ctx, p);
+        }
+        delete next;
+
+        if(ctx.stop){
+            break;
+        }
+
+        int score = same ? raw : -raw;
+
+        if(!searched_any || score > best_score){
+            searched_any = true;
+            best_score = score;
+            result.best_move = action;
+            result.score = best_score;
+            result.pv = {result.best_move};
+
+            if(p.report_partial && ctx.on_root_update){
+                ctx.on_root_update({result.best_move, best_score, depth, move_index + 1, total_moves});
+            }
+        }else{
+            searched_any = true;
+        }
+
+        if(score > alpha){
+            alpha = score;
+        }
+        if(alpha >= beta){
+            break;
+        }
+        move_index++;
+    }
+
+    if(searched_any){
+        result.score = best_score;
+    }
+    if(searched_any && !ctx.stop){
+        record_hash_best_move(state, result.best_move, depth);
+    }
+    result.nodes = ctx.nodes;
+    result.seldepth = ctx.seldepth;
+    result.pv = {result.best_move};
+
+    return result;
+}
+
 
 /*============================================================
  * MiniMax — default_params / param_defs
@@ -804,6 +1075,22 @@ ParamMap MiniMax::default_params(){
 }
 
 std::vector<ParamDef> MiniMax::param_defs(){
+    return {
+        {"UseKPEval", ParamDef::CHECK, "true"},
+        {"UseEvalMobility", ParamDef::CHECK, "true"},
+        {"ReportPartial", ParamDef::CHECK, "true"},
+    };
+}
+
+ParamMap PVS::default_params(){
+    return {
+        {"UseKPEval", "true"},
+        {"UseEvalMobility", "true"},
+        {"ReportPartial", "true"},
+    };
+}
+
+std::vector<ParamDef> PVS::param_defs(){
     return {
         {"UseKPEval", ParamDef::CHECK, "true"},
         {"UseEvalMobility", ParamDef::CHECK, "true"},

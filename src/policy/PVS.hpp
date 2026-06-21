@@ -1,19 +1,4 @@
 #pragma once
-#include <vector>
-#include "state.hpp"
-#include "search_types.hpp"
-#include "game_history.hpp"
+
+// Compatibility header: PVS is now declared in minimax.hpp.
 #include "minimax.hpp"
-
-class PVS{
-public:
-    static SearchResult search(
-        State *state,
-        int depth,
-        GameHistory& history,
-        SearchContext& ctx
-    );
-
-    static ParamMap default_params();
-    static std::vector<ParamDef> param_defs();
-};
